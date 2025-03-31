@@ -1,39 +1,46 @@
 import numpy as np
 import pygame
-import random
+import csv
 import math
-from pygame import gfxdraw
 
 pygame.init()
 
 WIDTH, HEIGHT = 800, 800
-SCALE = 8
-ROBOT_RADIUS = 3
-NUM_ROBOTS = 100
-K1 = 2
-K2 = 20
-N_NEIGHBORS = 5
-MASTER_INDEX = 0
-FORMATION_FORCE = 1.2
-FORMATION_ANGLE = 60
-ROW_SPACING = 4.0
-WING_SPACING = 3.0
-MASTER_SPEED = 2.5
+SCALE = 16
+ROBOT_RADIUS = 5
+NUM_ROBOTS = 20
+MAX_SPEED = 1.2
+BEHAVIOR_MODES = ['РОЙ', 'КЛИН']
+CURRENT_MODE = 1
 
-WHITE = (255, 255, 255)
+SEPARATION_RADIUS = 4.0
+ALIGNMENT_RADIUS = 8.0
+COHESION_RADIUS = 12.0
+SEPARATION_FORCE = 0.6
+COHESION_FORCE = 0.4
+ALIGNMENT_FORCE = 0.5
+
+LINE_SPACING = 2.0
+LINE_ANGLE = 30
+LINE_FOLLOW_FORCE = 1.2
+
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
-BLUE = (0, 0, 255)
 GREEN = (0, 255, 0)
 YELLOW = (255, 255, 0)
+BLUE = (0, 0, 255)
+WHITE = (255, 255, 255)
+
+TRAJECTORIES = [[] for _ in range(NUM_ROBOTS)]
 
 
 class Robot:
-    def __init__(self, x, y):
+    def __init__(self, x, y, line_id=0, line_order=0):
         self.position = np.array([x, y], dtype=float)
         self.velocity = np.array([0.0, 0.0])
         self.acceleration = np.array([0.0, 0.0])
-        self.neighbors = []
+        self.line_id = line_id
+        self.line_order = line_order
         self.formation_pos = np.array([x, y], dtype=float)
 
     def update(self, dt, mouse_pos=None):
@@ -41,115 +48,102 @@ class Robot:
             direction = mouse_pos - self.position
             distance = np.linalg.norm(direction)
             if distance > 0:
-                self.velocity = direction / distance * MASTER_SPEED
-            else:
-                self.velocity = np.array([0.0, 0.0])
+                self.velocity = direction / distance * MAX_SPEED
+
+        speed = np.linalg.norm(self.velocity)
+        if speed > MAX_SPEED:
+            self.velocity = self.velocity / speed * MAX_SPEED
 
         self.position += self.velocity * dt
-        self.position[0] = np.clip(self.position[0], 10, 40)
-        self.position[1] = np.clip(self.position[1], 10, 40)
+        self.position = np.clip(self.position, 0, 50)
+        self.acceleration = np.zeros(2)
 
 
-def calculate_formation_positions(master_pos, master_velocity, num_robots):
-    formation = []
-    half_angle = math.radians(FORMATION_ANGLE / 2)
-    if np.linalg.norm(master_velocity) > 0:
-        forward = master_velocity / np.linalg.norm(master_velocity)
+def calculate_swarm_forces(robots):
+    for i, robot in enumerate(robots):
+        separation = np.zeros(2)
+        alignment = np.zeros(2)
+        cohesion = np.zeros(2)
+        neighbors_count = 0
+
+        for j, other in enumerate(robots):
+            if i == j:
+                continue
+
+            dist = np.linalg.norm(robot.position - other.position)
+
+            if dist < SEPARATION_RADIUS and dist > 0:
+                separation += (robot.position - other.position) / (dist ** 2)
+
+            if dist < COHESION_RADIUS and dist > 0:
+                alignment += other.velocity
+                cohesion += other.position
+                neighbors_count += 1
+
+        if neighbors_count > 0:
+            alignment = (alignment / neighbors_count - robot.velocity) * ALIGNMENT_FORCE
+            cohesion = (cohesion / neighbors_count - robot.position) * COHESION_FORCE
+
+        separation *= SEPARATION_FORCE
+        robot.acceleration = separation + alignment + cohesion
+
+
+def calculate_line_formation(robots):
+    master = robots[0]
+    if np.linalg.norm(master.velocity) > 0.1:
+        forward = master.velocity / np.linalg.norm(master.velocity)
     else:
         forward = np.array([1.0, 0.0])
-        
-    left_wing = np.array([
-        forward[0] * math.cos(half_angle) - forward[1] * math.sin(half_angle),
-        forward[0] * math.sin(half_angle) + forward[1] * math.cos(half_angle)
+    backward = -forward
+    angle_rad = math.radians(LINE_ANGLE)
+    left_dir = np.array([
+        backward[0] * math.cos(angle_rad) - backward[1] * math.sin(angle_rad),
+        backward[0] * math.sin(angle_rad) + backward[1] * math.cos(angle_rad)
+    ])
+    right_dir = np.array([
+        backward[0] * math.cos(-angle_rad) - backward[1] * math.sin(-angle_rad),
+        backward[0] * math.sin(-angle_rad) + backward[1] * math.cos(-angle_rad)
     ])
 
-    right_wing = np.array([
-        forward[0] * math.cos(-half_angle) - forward[1] * math.sin(-half_angle),
-        forward[0] * math.sin(-half_angle) + forward[1] * math.cos(-half_angle)
-    ])
+    left_line = sorted([r for r in robots if r.line_id == 0 and r != master], key=lambda r: r.line_order)
+    right_line = sorted([r for r in robots if r.line_id == 1], key=lambda r: r.line_order)
 
-    row = 1
-    positions_generated = 0
-    while positions_generated < num_robots - 1:
-        for wing in [left_wing, right_wing]:
-            back_offset = forward * row * ROW_SPACING
-            wing_offset = wing * (row - 1) * WING_SPACING
+    for robot in left_line:
+        robot.formation_pos = master.position + left_dir * LINE_SPACING * (robot.line_order + 1)
+    for robot in right_line:
+        robot.formation_pos = master.position + right_dir * LINE_SPACING * (robot.line_order + 1)
 
-            pos = master_pos - back_offset + wing_offset
-            formation.append(pos)
-            positions_generated += 1
-
-            if positions_generated >= num_robots - 1:
-                break
-
-        row += 1
-
-    return formation
-
-
-def calculate_forces(robots, formation_mode):
-    master = robots[MASTER_INDEX]
-
-    if formation_mode:
-        formation_positions = calculate_formation_positions(
-            master.position,
-            master.velocity,
-            len(robots))
-
-        for i, robot in enumerate(robots):
-            if i == MASTER_INDEX:
-                continue
-            if (i - 1) < len(formation_positions):
-                robot.formation_pos = formation_positions[i - 1]
-
-    for i, robot in enumerate(robots):
-        if i == MASTER_INDEX:
-            continue
-
-        total_force = np.array([0.0, 0.0])
-
-        if formation_mode and not np.isnan(robot.formation_pos).any():
-            direction = robot.formation_pos - robot.position
-            distance = np.linalg.norm(direction)
-            if distance > 0.5:
-                total_force += FORMATION_FORCE * direction / distance * min(distance, 5.0)
-
-        distances = []
-        for j, other in enumerate(robots):
-            if i != j:
-                dist = np.linalg.norm(robot.position - other.position)
-                distances.append((j, dist))
-
-        distances.sort(key=lambda x: x[1])
-        robot.neighbors = distances[:N_NEIGHBORS]
-
-        for neighbor_idx, dist in robot.neighbors:
-            neighbor = robots[neighbor_idx]
-            direction = neighbor.position - robot.position
-            unit_vector = direction / (np.linalg.norm(direction) + 1e-6)
-
-            force = (K1 * dist - K2 / (dist ** 2 + 1e-6)) * unit_vector
-            total_force += force
-
-        robot.acceleration = total_force
+    for r in left_line + right_line:
+        to_ideal = r.formation_pos - r.position
+        dist = np.linalg.norm(to_ideal)
+        if dist > 0:
+            r.acceleration += to_ideal / dist * LINE_FOLLOW_FORCE
 
 
 def main():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("V-образный клин БПЛА")
+    pygame.display.set_caption("Рой и клиновая формация")
     clock = pygame.time.Clock()
-    font = pygame.font.SysFont('Arial', 16)
-    
-    robots = [Robot(random.uniform(10, 40), random.uniform(10, 40)) for _ in range(NUM_ROBOTS)]
-    master = robots[MASTER_INDEX]
+    font = pygame.font.SysFont('Arial', 18)
+    global LINE_SPACING
+
+    robots = []
+
+    robots.append(Robot(25, 25, line_id=0, line_order=0))
+    for i in range(1, NUM_ROBOTS):
+        line_id = 0 if i % 2 == 0 else 1
+        line_order = i // 2
+        x = 25 + (line_id * 2 - 1) * LINE_SPACING
+        y = 25
+        robots.append(Robot(x, y, line_id, line_order))
+    master = robots[0]
 
     running = True
     paused = False
     dragging = False
-    formation_mode = False
     t = 0
     dt = 0.1
-    
+
     while running:
         mouse_pos = None
         for event in pygame.event.get():
@@ -160,66 +154,85 @@ def main():
             elif event.type == pygame.MOUSEMOTION:
                 if dragging:
                     mx, my = pygame.mouse.get_pos()
-                    mouse_pos = ((mx - 100) / SCALE, (my - 100) / SCALE)
+                    mouse_pos = (mx / SCALE, my / SCALE)
             elif event.type == pygame.MOUSEBUTTONUP:
                 dragging = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     paused = not paused
                 elif event.key == pygame.K_r:
-                    robots = [Robot(random.uniform(10, 40), random.uniform(10, 40)) for _ in range(NUM_ROBOTS)]
-                    master = robots[MASTER_INDEX]
+                    robots = []
+                    robots.append(Robot(25, 25, line_id=0, line_order=0))
+                    for i in range(1, NUM_ROBOTS):
+                        line_id = 0 if i % 2 == 0 else 1
+                        line_order = i // 2
+                        x = 25 + (line_id * 2 - 1) * LINE_SPACING
+                        y = 25
+                        robots.append(Robot(x, y, line_id, line_order))
+                    master = robots[0]
                 elif event.key == pygame.K_f:
-                    formation_mode = not formation_mode
+                    global CURRENT_MODE
+                    CURRENT_MODE = (CURRENT_MODE + 1) % len(BEHAVIOR_MODES)
                 elif event.key == pygame.K_UP:
-                    global FORMATION_ANGLE
-                    FORMATION_ANGLE = min(FORMATION_ANGLE + 5, 120)
+                    LINE_SPACING = min(LINE_SPACING + 0.5, 8.0)
                 elif event.key == pygame.K_DOWN:
-                    FORMATION_ANGLE = max(FORMATION_ANGLE - 5, 30)
+                    LINE_SPACING = max(LINE_SPACING - 0.5, 1.0)
 
         if not paused:
             master.update(dt, mouse_pos=mouse_pos if dragging else None)
 
-            calculate_forces(robots, formation_mode)
+            if CURRENT_MODE == 0:
+                calculate_swarm_forces(robots)
+            else:
+                calculate_line_formation(robots)
+
+            for robot in robots[1:]:
+                robot.velocity += robot.acceleration * dt
+                robot.update(dt)
+                robot.acceleration = np.zeros(2)
 
             for i, robot in enumerate(robots):
-                if i != MASTER_INDEX:
-                    robot.velocity += robot.acceleration * dt
-                    robot.position += robot.velocity * dt
-                    speed = np.linalg.norm(robot.velocity)
-                    if speed > 2.0:
-                        robot.velocity = robot.velocity / speed * 2.0
+                TRAJECTORIES[i].append(robot.position.copy())
+            t += dt
 
         screen.fill(BLACK)
-        pygame.draw.rect(screen, WHITE, (100, 100, 50 * SCALE, 50 * SCALE), 1)
 
         for i, robot in enumerate(robots):
-            x = int(100 + robot.position[0] * SCALE)
-            y = int(100 + robot.position[1] * SCALE)
-
-            color = RED if i == MASTER_INDEX else BLUE
-            pygame.draw.circle(screen, color, (x, y), ROBOT_RADIUS + (2 if i == MASTER_INDEX else 0))
-
-            if formation_mode and i != MASTER_INDEX and not np.isnan(robot.formation_pos).any():
-                tx = int(100 + robot.formation_pos[0] * SCALE)
-                ty = int(100 + robot.formation_pos[1] * SCALE)
+            pos = robot.position * SCALE
+            if i == 0:
+                color = RED
+            else:
+                color = BLUE if robot.line_id == 0 else BLUE
+            pygame.draw.circle(screen, color, pos, ROBOT_RADIUS)
+            pygame.draw.circle(screen, BLACK, pos, ROBOT_RADIUS, 1)
 
         info = [
-            f"Режим: {'V-КЛИН' if formation_mode else 'РОЙ'} (F)",
-            f"Угол: {FORMATION_ANGLE}° (Вверх/Вниз)",
+            f"Режим: {BEHAVIOR_MODES[CURRENT_MODE]} (F)",
             f"Роботов: {NUM_ROBOTS}",
+            f"Дистанция: {LINE_SPACING:.1f} (▲/▼)",
+            f"Угол: {LINE_ANGLE}° (между линиями 60°)",
             f"Время: {t:.1f} с",
-            "ЛКМ: тянуть, Пробел: пауза, R: сброс"
+            "ЛКМ: управление, Пробел: пауза, R: сброс"
         ]
-        for i, text in enumerate(info):
+        y_offset = 10
+        for text in info:
             surf = font.render(text, True, WHITE)
-            screen.blit(surf, (10, 10 + i * 20))
+            screen.blit(surf, (10, y_offset))
+            y_offset += 25
 
         pygame.display.flip()
         clock.tick(60)
-        t += dt
 
     pygame.quit()
+
+    with open('robot_trajectory.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        for traj in TRAJECTORIES:
+            row = []
+            for pos in traj:
+                row.extend([pos[0], pos[1]])
+            writer.writerow(row)
+    print("Траектории сохранены в robot_trajectory.csv")
 
 
 if __name__ == "__main__":
