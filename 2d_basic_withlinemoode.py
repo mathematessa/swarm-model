@@ -1,5 +1,6 @@
 import numpy as np
 import pygame
+import csv
 import random
 import math
 from pygame import gfxdraw
@@ -21,7 +22,7 @@ SEPARATION_FORCE = 0.6
 COHESION_FORCE = 0.4
 ALIGNMENT_FORCE = 0.5
 
-LINE_SPACING = 5.0
+LINE_SPACING = 2.0
 LINE_FOLLOW_FORCE = 1.2
 LINE_ALIGNMENT_FORCE = 0.8
 MAX_LINE_DEVIATION = 2.0
@@ -32,6 +33,8 @@ RED = (255, 0, 0)
 BLUE = (0, 0, 255)
 GREEN = (0, 255, 0)
 YELLOW = (255, 255, 0)
+
+TRAJECTORIES = [[] for _ in range(NUM_ROBOTS)]
 
 
 class Robot:
@@ -180,7 +183,8 @@ def main():
                 robot.velocity += robot.acceleration * dt
                 robot.update(dt)
                 robot.acceleration = np.zeros(2)
-
+            for i, robot in enumerate(robots):
+                TRAJECTORIES[i].append(robot.position.copy())
             t += dt
 
         screen.fill(BLACK)
@@ -221,3 +225,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+with open('robot_trajectory.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    for traj in TRAJECTORIES:
+        row = []
+        for pos in traj:
+            row.extend([pos[0], pos[1]])
+        writer.writerow(row)
+print("Траектории роботов сохранены в robot_trajectory.csv")
