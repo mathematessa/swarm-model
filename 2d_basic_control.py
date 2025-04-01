@@ -154,7 +154,6 @@ def main():
                 trajectories[i].append(robot.position.copy())
 
         screen.fill(BLACK)
-        pygame.draw.rect(screen, WHITE, (100, 100, 50 * SCALE, 50 * SCALE), 1)
 
         if mouse_influence:
             mx, my = pygame.mouse.get_pos()
@@ -169,13 +168,11 @@ def main():
             else:
                 pygame.draw.circle(screen, BLUE, (x, y), ROBOT_RADIUS)
 
-        for neighbor_idx, dist in robots[-1].neighbors:
-            neighbor = robots[neighbor_idx]
-            nx = int(100 + neighbor.position[0] * SCALE)
-            ny = int(100 + neighbor.position[1] * SCALE)
-            pygame.draw.line(screen, GREEN, (x, y), (nx, ny), 1)
+            for neighbor_idx, dist in robots[-1].neighbors:
+                neighbor = robots[neighbor_idx]
+                nx = int(100 + neighbor.position[0] * SCALE)
+                ny = int(100 + neighbor.position[1] * SCALE)
 
-        # Отображение информации
         info_text = [
             f"Время: {t:.1f} с",
             f"Количество роботов: {NUM_ROBOTS}",
